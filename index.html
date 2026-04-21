@@ -452,8 +452,13 @@ const DIV = {
   '2412.TW':{rate:4.5,  note:'中華電信，電信業護城河，高殖利率'}
 };
 
-const PROXY = 'https://api.allorigins.win/get?url=';
-const YF    = 'https://query1.finance.yahoo.com/v8/finance/chart/';
+const YF = 'https://query1.finance.yahoo.com/v8/finance/chart/';
+// CORS proxy chain（瀏覽器端依序嘗試）
+const PROXIES = [
+  url => `https://corsproxy.io/?${encodeURIComponent(url)}`,
+  url => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
+  url => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`,
+];
 
 /* ══════════════════════════════════════════════════
    狀態
@@ -497,28 +502,30 @@ function todayStr(){
 /* ══════════════════════════════════════════════════
    API
 ═══════════════════════════════════════════════════ */
+function fetchTimeout(url, ms=8000){
+  const ctrl = new AbortController();
+  const t = setTimeout(()=>ctrl.abort(), ms);
+  return fetch(url, {signal:ctrl.signal}).finally(()=>clearTimeout(t));
+}
+
 async function fetchYF(sym, range='1y', interval='1d'){
   const key = `${sym}|${range}|${interval}`;
   if(dataCache[key]) return dataCache[key];
 
-  const url = `${YF}${sym}?interval=${interval}&range=${range}&includePrePost=false`;
+  const yfUrl = `${YF}${sym}?interval=${interval}&range=${range}&includePrePost=false`;
   let data = null;
 
-  // Try direct
-  try{
-    const r = await Promise.race([
-      fetch(url),
-      new Promise((_,rej)=>setTimeout(()=>rej(new Error('timeout')),5000))
-    ]);
-    if(r.ok) data = await r.json();
-  }catch(_){}
-
-  // Fallback proxy
-  if(!data){
+  for(const makeProxy of PROXIES){
+    if(data) break;
     try{
-      const r = await fetch(PROXY + encodeURIComponent(url));
-      const j = await r.json();
-      data = JSON.parse(j.contents);
+      const r = await fetchTimeout(makeProxy(yfUrl), 8000);
+      if(!r.ok) continue;
+      const txt = await r.text();
+      const j = JSON.parse(txt);
+      // allorigins /raw 直接回傳 JSON；corsproxy.io 也直接回傳
+      if(j?.chart?.result){ data = j; break; }
+      // allorigins /get 回傳 { contents: "..." }
+      if(j?.contents){ const inner = JSON.parse(j.contents); if(inner?.chart?.result) data = inner; }
     }catch(_){}
   }
 
@@ -526,18 +533,41 @@ async function fetchYF(sym, range='1y', interval='1d'){
   return data;
 }
 
+function parseRSS(xml){
+  try{
+    const doc = new DOMParser().parseFromString(xml,'text/xml');
+    return Array.from(doc.querySelectorAll('item')).map(el=>({
+      title:   el.querySelector('title')?.textContent?.trim() || '',
+      link:    el.querySelector('link')?.textContent?.trim()  || '',
+      pubDate: el.querySelector('pubDate')?.textContent?.trim() || ''
+    })).filter(i=>i.title);
+  }catch(_){ return []; }
+}
+
 async function fetchNews(){
   if(newsCache) return newsCache;
-  try{
-    const rss = 'https://www.cnyes.com/rss/cat/tw_stock';
-    const url = `https://api.rss2json.com/v1/api.json?rss_url=${encodeURIComponent(rss)}&count=30`;
-    const r = await fetch(url);
-    const j = await r.json();
-    if(j.status==='ok'){
-      newsCache = j.items;
-      return newsCache;
+  const RSS_FEEDS = [
+    'https://www.cnyes.com/rss/cat/tw_stock',
+    'https://www.moneydj.com/FINT/rss/newsrss.aspx?svc=NW',
+  ];
+  for(const feed of RSS_FEEDS){
+    for(const makeProxy of PROXIES){
+      try{
+        const r = await fetchTimeout(makeProxy(feed), 8000);
+        if(!r.ok) continue;
+        const txt = await r.text();
+        // 可能是 JSON 包裝（allorigins）或直接 XML
+        let items = [];
+        if(txt.trim().startsWith('<')){ items = parseRSS(txt); }
+        else{
+          const j = JSON.parse(txt);
+          const xml = j.contents || j;
+          if(typeof xml === 'string') items = parseRSS(xml);
+        }
+        if(items.length){ newsCache = items; return newsCache; }
+      }catch(_){}
     }
-  }catch(_){}
+  }
   return [];
 }
 
