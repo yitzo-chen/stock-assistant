@@ -438,7 +438,19 @@ const NAMES = {
   '2474':'可成','3008':'大立光'
 };
 
-const ST_POOL = ['2330.TW','2454.TW','2317.TW','2308.TW','2382.TW','3034.TW','2395.TW','2379.TW'];
+const ST_POOL = [
+  '2330.TW','2454.TW','2317.TW','2308.TW','2382.TW',
+  '3034.TW','2395.TW','2379.TW','2303.TW','2357.TW',
+  '2376.TW','2474.TW','3008.TW','2344.TW','2886.TW',
+  '2891.TW','2002.TW','1301.TW','1303.TW','2207.TW'
+];
+
+// AI 精選：由 Claude 根據產業趨勢挑選
+const AI_PICKS = [
+  {sym:'2330.TW', reason:'AI 晶片代工龍頭，CoWoS 先進封裝需求強勁，護城河最深'},
+  {sym:'2382.TW', reason:'AI 伺服器組裝龍頭，GB200/GB300 出貨加速，CSP 訂單能見度高'},
+  {sym:'2454.TW', reason:'AI 手機晶片市占持續提升，天璣旗艦出貨動能佳'},
+];
 
 const LT_STOCKS = [
   {sym:'0050.TW', reason:'追蹤台灣前50大企業，分散風險，長期穩健'},
@@ -668,30 +680,60 @@ async function loadIndex(){
   }
 }
 
+function genReason(pct){
+  if(pct>5)  return `今日強漲 ${pct.toFixed(1)}%，動能爆發，注意追高風險`;
+  if(pct>3)  return `今日漲幅 ${pct.toFixed(1)}%，量能放大，短線偏多`;
+  if(pct>1)  return `今日上漲 ${pct.toFixed(1)}%，趨勢穩步向上`;
+  if(pct>0)  return `小幅上漲 ${pct.toFixed(1)}%，量能持穩，可觀察`;
+  if(pct>-1) return `小幅修正 ${Math.abs(pct).toFixed(1)}%，波動低，伺機布局`;
+  return     `今日回檔 ${Math.abs(pct).toFixed(1)}%，等待止穩訊號`;
+}
+
+function renderRiskSection(title, sub, stocks, riskLabel, color){
+  if(!stocks.length) return '';
+  let html=`<div class="section">
+    <div class="sec-title" style="color:${color}">${title}</div>
+    <div class="sec-sub">${sub}</div>`;
+  stocks.forEach(s=>{
+    html+=stockCard(s.sym,code(s.sym),name(s.sym),s.price,s.chg,s.pct,colorCls(s.pct),riskLabel,genReason(s.pct));
+  });
+  return html+'</div>';
+}
+
 async function loadRecommendations(){
   const el = document.getElementById('home-content');
+  el.innerHTML='<div class="loading"><div class="spinner"></div><span>分析中，請稍候...</span></div>';
 
-  // Fetch short-term candidates
-  const stRes = await Promise.allSettled(ST_POOL.map(s=>fetchYF(s,'5d','1d')));
-  let candidates = [];
+  // 同步抓取所有候選股 + AI精選 + 長期存股
+  const [stRes, aiRes, ltRes] = await Promise.all([
+    Promise.allSettled(ST_POOL.map(s=>fetchYF(s,'5d','1d'))),
+    Promise.allSettled(AI_PICKS.map(p=>fetchYF(p.sym,'5d','1d'))),
+    Promise.allSettled(LT_STOCKS.map(s=>fetchYF(s.sym,'5d','1d'))),
+  ]);
+
+  // 建立候選股資料並按漲幅排序
+  let cands = [];
   stRes.forEach((r,i)=>{
     if(r.status==='fulfilled'&&r.value){
       const q=parseQuote(r.value);
-      if(q) candidates.push({sym:ST_POOL[i],...q});
+      if(q) cands.push({sym:ST_POOL[i],...q});
     }
   });
-  const settings = getSettings();
-  if(settings.mode==='storage'){
-    // 存股模式：優先顯示漲幅小、穩定的
-    candidates.sort((a,b)=>Math.abs(a.pct)-Math.abs(b.pct));
-  } else {
-    // 技術面：漲幅高排前
-    candidates.sort((a,b)=>b.pct-a.pct);
-  }
-  const shortTop3 = candidates.slice(0,3);
+  cands.sort((a,b)=>b.pct-a.pct);
 
-  // Fetch long-term
-  const ltRes = await Promise.allSettled(LT_STOCKS.map(s=>fetchYF(s.sym,'5d','1d')));
+  const n = cands.length;
+  const high = cands.slice(0,3);
+  const mid  = cands.slice(Math.max(0,Math.floor(n/2)-1), Math.floor(n/2)+2);
+  const low  = cands.slice(-3).reverse(); // 最穩定的排前
+
+  // AI精選資料
+  const aiData = AI_PICKS.map((p,i)=>{
+    let q=null;
+    if(aiRes[i].status==='fulfilled'&&aiRes[i].value) q=parseQuote(aiRes[i].value);
+    return {...p,...(q||{price:0,chg:0,pct:0})};
+  });
+
+  // 長期存股資料
   const ltData = LT_STOCKS.map((s,i)=>{
     let q=null;
     if(ltRes[i].status==='fulfilled'&&ltRes[i].value) q=parseQuote(ltRes[i].value);
@@ -700,40 +742,44 @@ async function loadRecommendations(){
 
   let html='';
 
-  // Short term
-  html+=`<div class="section">
-    <div class="sec-title">📈 短期波段推薦</div>
-    <div class="sec-sub">技術面強勢、量能放大，適合 1～4 週波段操作</div>`;
-  if(!shortTop3.length){
-    html+='<div class="err-state">⚠️ 無法載入推薦資料</div>';
-  } else {
-    shortTop3.forEach(s=>{
-      const c=code(s.sym), n2=name(s.sym);
-      const cls=colorCls(s.pct);
-      const risk = s.pct>3?'🔴 高風險':s.pct>1?'🟡 中風險':'🟢 低風險';
-      const reason = s.pct>3
-        ? `今日強漲 ${s.pct.toFixed(1)}%，動能強勁`
-        : s.pct>0
-        ? `今日上漲 ${s.pct.toFixed(1)}%，趨勢偏多`
-        : s.pct>-1
-        ? `小幅修正 ${s.pct.toFixed(1)}%，量能持穩`
-        : `回檔 ${s.pct.toFixed(1)}%，可觀察低接`;
-      html+=stockCard(s.sym,c,n2,s.price,s.chg,s.pct,cls,risk,reason);
-    });
+  if(!n){
+    html='<div class="err-state">⚠️ 無法載入推薦資料，請檢查網路連線</div>';
+    el.innerHTML=html; return;
   }
+
+  // ── 四大短期推薦區塊 ───────────────────────────
+  html+=renderRiskSection(
+    '🔴 高風險波段', '高動能衝擊股，漲勢強勁，適合積極型短線，嚴設停損',
+    high, '🔴 高風險', '#ff3d3d'
+  );
+  html+=renderRiskSection(
+    '🟡 中風險波段', '量價穩健，多空訊號均衡，適合一般波段操作',
+    mid, '🟡 中風險', '#ffd600'
+  );
+  html+=renderRiskSection(
+    '🟢 低風險波段', '今日波動最小，適合保守型投資人小波段或觀察',
+    low, '🟢 低風險', '#00c853'
+  );
+
+  // ── AI 精選 ───────────────────────────────────
+  html+=`<div class="section">
+    <div class="sec-title" style="color:var(--accent)">🤖 AI 精選推薦</div>
+    <div class="sec-sub">Claude 綜合產業趨勢與基本面精選，適合中線布局</div>`;
+  aiData.forEach(p=>{
+    const cls=colorCls(p.pct);
+    const risk=p.pct>3?'🔴 高風險':p.pct>1?'🟡 中風險':'🟢 低風險';
+    html+=stockCard(p.sym,code(p.sym),name(p.sym),p.price,p.chg,p.pct,cls,risk,p.reason);
+  });
   html+='</div>';
 
-  // Long term
+  // ── 長期存股 ─────────────────────────────────
   html+=`<div class="section">
     <div class="sec-title">🏦 長期存股推薦</div>
     <div class="sec-sub">配息穩定、波動低，適合長期持有 1 年以上</div>`;
   ltData.forEach((s,i)=>{
-    const c=code(s.sym), n2=name(s.sym);
     const cls=colorCls(s.pct);
     const drate=DIV[s.sym]?.rate||3;
-    const priceStr=s.price>0?`$${fmtPrice(s.price)}`:'--';
-    const chgStr=s.price>0?fmtChg(s.chg,s.pct):'--';
-    html+=stockCard(s.sym,c,n2,s.price,s.chg,s.pct,cls,'🟢 低風險',
+    html+=stockCard(s.sym,code(s.sym),name(s.sym),s.price,s.chg,s.pct,cls,'🟢 低風險',
       `${LT_STOCKS[i].reason}，殖利率約 ${drate}%`);
   });
   html+='</div>';
