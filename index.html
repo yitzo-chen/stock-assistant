@@ -513,16 +513,17 @@ const DIV = {
 };
 
 const YF = 'https://query1.finance.yahoo.com/v8/finance/chart/';
-// CORS proxy chain（瀏覽器端依序嘗試）
+// CORS proxy（allorigins 已掛，只保留 corsproxy.io）
 const PROXIES = [
   url => `https://corsproxy.io/?${encodeURIComponent(url)}`,
-  url => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
   url => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`,
 ];
 
-const TWSE_MIS = 'https://mis.twse.com.tw/stock/api/getStockInfo.jsp';
-const OTC_SET  = new Set(['3045','8069','6176','4938','6669']);
-function exchPrefix(c){ return OTC_SET.has(c)?'otc':'tse'; }
+// TWSE 官方開放資料（CORS 完整支援）
+const TWSE_OPEN = 'https://openapi.twse.com.tw/v1/exchangeReport';
+let twseCache   = null;
+let twseCacheTs = 0;
+const TWSE_TTL  = 5 * 60 * 1000;
 
 /* ══════════════════════════════════════════════════
    狀態
@@ -572,36 +573,70 @@ function fetchTimeout(url, ms=8000){
   return fetch(url, {signal:ctrl.signal}).finally(()=>clearTimeout(t));
 }
 
-async function fetchTWSEBatch(codes){
-  if(!codes.length) return {};
-  const exCh = codes.map(c=>`${exchPrefix(c)}_${c}.tw`).join('|');
+async function fetchTWSEAll(){
+  const now = Date.now();
+  if(twseCache && now - twseCacheTs < TWSE_TTL) return twseCache;
   try{
-    const r = await fetchTimeout(`${TWSE_MIS}?ex_ch=${exCh}&json=1&delay=0`, 10000);
-    if(!r.ok) return {};
-    const j = await r.json();
+    const r = await fetchTimeout(`${TWSE_OPEN}/STOCK_DAY_ALL`, 12000);
+    if(!r.ok) return twseCache || {};
+    const arr = await r.json();
     const map = {};
-    (j.msgArray||[]).forEach(item=>{
-      const price = item.z!=='-' ? parseFloat(item.z) : parseFloat(item.y);
-      const prev  = parseFloat(item.y);
-      if(!price||!prev||isNaN(price)||isNaN(prev)) return;
-      map[item.c] = {price, prev, chg:price-prev, pct:prev?(price-prev)/prev*100:0};
+    arr.forEach(item=>{
+      const price = parseFloat(item.ClosingPrice);
+      const chg   = parseFloat(item.Change);
+      if(!price || isNaN(price) || price <= 0) return;
+      const c2  = isNaN(chg) ? 0 : chg;
+      const prev = price - c2;
+      const pct  = prev > 0 ? (c2/prev)*100 : 0;
+      map[item.Code] = {price, prev, chg:c2, pct};
     });
-    return map;
-  }catch(_){ return {}; }
+    if(Object.keys(map).length > 0){
+      twseCache   = map;
+      twseCacheTs = now;
+    }
+    return twseCache || {};
+  }catch(_){ return twseCache || {}; }
+}
+
+async function fetchTWSEBatch(codes){
+  const all = await fetchTWSEAll();
+  const result = {};
+  codes.forEach(c=>{ if(all[c]) result[c] = all[c]; });
+  return result;
 }
 
 async function fetchTWSEIndex(){
+  // 先嘗試 TWSE openapi 指數
   try{
-    const r = await fetchTimeout(`${TWSE_MIS}?ex_ch=tse_t00.tw&json=1&delay=0`, 8000);
-    if(!r.ok) return null;
-    const j = await r.json();
-    const item = j.msgArray?.[0];
-    if(!item) return null;
-    const price = item.z!=='-' ? parseFloat(item.z) : parseFloat(item.y);
-    const prev  = parseFloat(item.y);
-    if(!price||!prev||isNaN(price)||isNaN(prev)) return null;
-    return {price, prev, chg:price-prev, pct:prev?(price-prev)/prev*100:0};
-  }catch(_){ return null; }
+    const r = await fetchTimeout(`${TWSE_OPEN}/MI_INDEX`, 8000);
+    if(r.ok){
+      const arr = await r.json();
+      const item = arr.find(i=>
+        String(i.Index||'').includes('加權') ||
+        String(i.Type||'').includes('加權')  ||
+        String(i.Name||'').includes('加權')
+      );
+      if(item){
+        const price = parseFloat(item.ClosingIndex || item.Index || item.Close);
+        const chg   = parseFloat(item.Change || '0');
+        if(price && !isNaN(price)){
+          const prev = price - chg;
+          return {price, prev, chg, pct: prev>0?(chg/prev)*100:0};
+        }
+      }
+    }
+  }catch(_){}
+  // fallback: Yahoo Finance via corsproxy
+  try{
+    const yfUrl = `${YF}^TWII?interval=1d&range=5d&includePrePost=false`;
+    const r = await fetchTimeout(`https://corsproxy.io/?${encodeURIComponent(yfUrl)}`, 8000);
+    if(r.ok){
+      const j = await r.json();
+      const q = parseQuote(j);
+      if(q) return q;
+    }
+  }catch(_){}
+  return null;
 }
 
 async function fetchYF(sym, range='1y', interval='1d'){
@@ -644,25 +679,26 @@ async function fetchNews(){
   if(newsCache) return newsCache;
   const RSS_FEEDS = [
     'https://www.cnyes.com/rss/cat/tw_stock',
+    'https://news.cnyes.com/news/rss/cat/tw_stock',
     'https://www.moneydj.com/FINT/rss/newsrss.aspx?svc=NW',
   ];
+  // allorigins 已掛，只用 corsproxy.io
   for(const feed of RSS_FEEDS){
-    for(const makeProxy of PROXIES){
-      try{
-        const r = await fetchTimeout(makeProxy(feed), 8000);
-        if(!r.ok) continue;
-        const txt = await r.text();
-        // 可能是 JSON 包裝（allorigins）或直接 XML
-        let items = [];
-        if(txt.trim().startsWith('<')){ items = parseRSS(txt); }
-        else{
+    try{
+      const r = await fetchTimeout(`https://corsproxy.io/?${encodeURIComponent(feed)}`, 9000);
+      if(!r.ok) continue;
+      const txt = await r.text();
+      let items = [];
+      if(txt.trim().startsWith('<')){ items = parseRSS(txt); }
+      else{
+        try{
           const j = JSON.parse(txt);
           const xml = j.contents || j;
           if(typeof xml === 'string') items = parseRSS(xml);
-        }
-        if(items.length){ newsCache = items; return newsCache; }
-      }catch(_){}
-    }
+        }catch(_){}
+      }
+      if(items.length){ newsCache = items; return newsCache; }
+    }catch(_){}
   }
   return [];
 }
@@ -1234,7 +1270,7 @@ let planDebounce;
 
 function fmtBudget(v){
   if(v>=10000) return (v/10000)+'萬';
-  return v.toLocaleString('zh-TW');
+  return String(v);
 }
 
 function setPlanBudget(v){
@@ -1380,7 +1416,7 @@ function planStockCard(sym,price,allocBudget,riskLabel,reason){
 
 function renderPlan(){
   const el=document.getElementById('page-plan');
-  const presets=[50000,100000,300000,500000,1000000,2000000];
+  const presets=[1000,5000,10000,50000,100000,1000000];
   el.innerHTML=`
     <div class="pg-header">💰 投資規劃</div>
     <div class="plan-budget-sec">
