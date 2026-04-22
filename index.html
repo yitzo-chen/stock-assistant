@@ -342,6 +342,48 @@ input{font-family:inherit}
   font-size:12px;color:var(--muted);line-height:1.75;
 }
 .about-box strong{color:var(--text)}
+
+/* ── Plan page ───────────────────────────────── */
+.plan-budget-sec{
+  margin:12px 12px 0;padding:14px 16px;
+  background:var(--card);border-radius:12px;border:1px solid var(--border);
+}
+.plan-budget-lbl{font-size:12px;color:var(--muted);margin-bottom:8px}
+.plan-budget-row{display:flex;align-items:center;gap:8px;margin-bottom:10px}
+.plan-budget-input{
+  flex:1;padding:10px 14px;background:var(--bg);
+  border:1px solid var(--border);border-radius:8px;
+  color:var(--text);font-size:20px;font-weight:700;
+}
+.plan-budget-input:focus{outline:none;border-color:var(--accent)}
+.plan-unit{font-size:14px;color:var(--muted);white-space:nowrap}
+.plan-presets{display:flex;flex-wrap:wrap;gap:6px}
+.preset-btn{
+  padding:5px 11px;border:1px solid var(--border);border-radius:6px;
+  font-size:12px;background:transparent;color:var(--muted);
+}
+.preset-btn.active{background:var(--accent);color:#fff;border-color:var(--accent)}
+.preset-btn:active{opacity:.8}
+
+.plan-alloc-sec{
+  margin:10px 12px 0;padding:12px 14px;
+  background:var(--card);border-radius:12px;border:1px solid var(--border);
+}
+.plan-alloc-title{font-size:13px;font-weight:700;margin-bottom:10px}
+.plan-alloc-row{
+  display:flex;align-items:center;gap:8px;margin-bottom:8px;
+}
+.plan-alloc-row:last-child{margin-bottom:0}
+.alloc-lbl{font-size:12px;color:var(--muted);width:86px;flex-shrink:0}
+.alloc-bar-wrap{flex:1;height:7px;background:var(--border);border-radius:4px;overflow:hidden}
+.alloc-bar{height:100%;border-radius:4px}
+.alloc-pct{font-size:12px;color:var(--muted);width:28px;text-align:right;flex-shrink:0}
+.alloc-amt{font-size:12px;font-weight:600;color:var(--text);width:76px;text-align:right;flex-shrink:0}
+
+.plan-lot-row{font-size:12px;padding:3px 0;display:flex;align-items:center;gap:4px}
+.plan-ok{color:var(--down)}
+.plan-no{color:var(--muted)}
+.plan-frac{color:var(--accent)}
 </style>
 </head>
 <body>
@@ -378,6 +420,9 @@ input{font-family:inherit}
       </div>
     </div>
 
+    <!-- ── 規劃 ──────────────────────────────── -->
+    <div id="page-plan" class="page"></div>
+
     <!-- ── 搜尋 ──────────────────────────────── -->
     <div id="page-search" class="page">
       <div class="search-header">
@@ -407,6 +452,9 @@ input{font-family:inherit}
     <nav id="bottom-nav">
       <div class="nav-item active" data-page="home" onclick="gotoPage('home')">
         <span class="nav-icon">🏠</span><span>首頁</span>
+      </div>
+      <div class="nav-item" data-page="plan" onclick="gotoPage('plan')">
+        <span class="nav-icon">💰</span><span>規劃</span>
       </div>
       <div class="nav-item" data-page="search" onclick="gotoPage('search')">
         <span class="nav-icon">🔍</span><span>搜尋</span>
@@ -472,6 +520,10 @@ const PROXIES = [
   url => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`,
 ];
 
+const TWSE_MIS = 'https://mis.twse.com.tw/stock/api/getStockInfo.jsp';
+const OTC_SET  = new Set(['3045','8069','6176','4938','6669']);
+function exchPrefix(c){ return OTC_SET.has(c)?'otc':'tse'; }
+
 /* ══════════════════════════════════════════════════
    狀態
 ═══════════════════════════════════════════════════ */
@@ -518,6 +570,38 @@ function fetchTimeout(url, ms=8000){
   const ctrl = new AbortController();
   const t = setTimeout(()=>ctrl.abort(), ms);
   return fetch(url, {signal:ctrl.signal}).finally(()=>clearTimeout(t));
+}
+
+async function fetchTWSEBatch(codes){
+  if(!codes.length) return {};
+  const exCh = codes.map(c=>`${exchPrefix(c)}_${c}.tw`).join('|');
+  try{
+    const r = await fetchTimeout(`${TWSE_MIS}?ex_ch=${exCh}&json=1&delay=0`, 10000);
+    if(!r.ok) return {};
+    const j = await r.json();
+    const map = {};
+    (j.msgArray||[]).forEach(item=>{
+      const price = item.z!=='-' ? parseFloat(item.z) : parseFloat(item.y);
+      const prev  = parseFloat(item.y);
+      if(!price||!prev||isNaN(price)||isNaN(prev)) return;
+      map[item.c] = {price, prev, chg:price-prev, pct:prev?(price-prev)/prev*100:0};
+    });
+    return map;
+  }catch(_){ return {}; }
+}
+
+async function fetchTWSEIndex(){
+  try{
+    const r = await fetchTimeout(`${TWSE_MIS}?ex_ch=tse_t00.tw&json=1&delay=0`, 8000);
+    if(!r.ok) return null;
+    const j = await r.json();
+    const item = j.msgArray?.[0];
+    if(!item) return null;
+    const price = item.z!=='-' ? parseFloat(item.z) : parseFloat(item.y);
+    const prev  = parseFloat(item.y);
+    if(!price||!prev||isNaN(price)||isNaN(prev)) return null;
+    return {price, prev, chg:price-prev, pct:prev?(price-prev)/prev*100:0};
+  }catch(_){ return null; }
 }
 
 async function fetchYF(sym, range='1y', interval='1d'){
@@ -651,6 +735,7 @@ function gotoPage(pg){
   document.querySelector(`.nav-item[data-page="${pg}"]`).classList.add('active');
   curPage = pg;
   if(pg==='home') renderHome();
+  if(pg==='plan') renderPlan();
   if(pg==='watchlist') renderWatchlist();
   if(pg==='settings') renderSettings();
 }
@@ -666,8 +751,7 @@ async function renderHome(){
 async function loadIndex(){
   const el = document.getElementById('mkt-content');
   try{
-    const d = await fetchYF('^TWII','5d','1d');
-    const q = parseQuote(d);
+    const q = await fetchTWSEIndex();
     if(q){
       const cls=colorCls(q.chg);
       el.innerHTML=`<div class="mkt-price ${cls}">${q.price.toLocaleString('zh-TW',{maximumFractionDigits:2})}</div>
@@ -704,41 +788,36 @@ async function loadRecommendations(){
   const el = document.getElementById('home-content');
   el.innerHTML='<div class="loading"><div class="spinner"></div><span>分析中，請稍候...</span></div>';
 
-  // 同步抓取所有候選股 + AI精選 + 長期存股
-  const [stRes, aiRes, ltRes] = await Promise.all([
-    Promise.allSettled(ST_POOL.map(s=>fetchYF(s,'5d','1d'))),
-    Promise.allSettled(AI_PICKS.map(p=>fetchYF(p.sym,'5d','1d'))),
-    Promise.allSettled(LT_STOCKS.map(s=>fetchYF(s.sym,'5d','1d'))),
-  ]);
+  // 批次抓取所有股票（TWSE 官方 API，保證 CORS）
+  const allCodes = [
+    ...ST_POOL.map(code),
+    ...AI_PICKS.map(p=>code(p.sym)),
+    ...LT_STOCKS.map(s=>code(s.sym))
+  ];
+  const twseMap = await fetchTWSEBatch(allCodes);
 
   // 建立候選股資料並按漲幅排序
   let cands = [];
-  stRes.forEach((r,i)=>{
-    if(r.status==='fulfilled'&&r.value){
-      const q=parseQuote(r.value);
-      if(q) cands.push({sym:ST_POOL[i],...q});
-    }
+  ST_POOL.forEach(s=>{
+    const q = twseMap[code(s)];
+    if(q) cands.push({sym:s,...q});
   });
   cands.sort((a,b)=>b.pct-a.pct);
 
   const n = cands.length;
   const high = cands.slice(0,3);
   const mid  = cands.slice(Math.max(0,Math.floor(n/2)-1), Math.floor(n/2)+2);
-  const low  = cands.slice(-3).reverse(); // 最穩定的排前
+  const low  = cands.slice(-3).reverse();
 
   // AI精選資料
-  const aiData = AI_PICKS.map((p,i)=>{
-    let q=null;
-    if(aiRes[i].status==='fulfilled'&&aiRes[i].value) q=parseQuote(aiRes[i].value);
-    return {...p,...(q||{price:0,chg:0,pct:0})};
-  });
+  const aiData = AI_PICKS.map(p=>({
+    ...p, ...(twseMap[code(p.sym)]||{price:0,chg:0,pct:0})
+  }));
 
   // 長期存股資料
-  const ltData = LT_STOCKS.map((s,i)=>{
-    let q=null;
-    if(ltRes[i].status==='fulfilled'&&ltRes[i].value) q=parseQuote(ltRes[i].value);
-    return {...s,...(q||{price:0,chg:0,pct:0})};
-  });
+  const ltData = LT_STOCKS.map(s=>({
+    ...s, ...(twseMap[code(s.sym)]||{price:0,chg:0,pct:0})
+  }));
 
   let html='';
 
@@ -828,18 +907,16 @@ function handleSearch(){
   el.innerHTML='<div class="loading"><div class="spinner"></div><span>載入股價中...</span></div>';
   const top=matches.slice(0,12);
 
-  Promise.allSettled(top.map(m=>fetchYF(m.code+'.TW','5d','1d'))).then(res=>{
+  fetchTWSEBatch(top.map(m=>m.code)).then(twseMap=>{
     let html='';
-    top.forEach((m,i)=>{
+    top.forEach(m=>{
       const sym=m.code+'.TW';
       let priceStr='--', chgStr='--', cls='nt';
-      if(res[i].status==='fulfilled'&&res[i].value){
-        const q=parseQuote(res[i].value);
-        if(q){
-          cls=colorCls(q.pct);
-          priceStr='$'+fmtPrice(q.price);
-          chgStr=fmtChg(q.chg,q.pct);
-        }
+      const q = twseMap[m.code];
+      if(q){
+        cls=colorCls(q.pct);
+        priceStr='$'+fmtPrice(q.price);
+        chgStr=fmtChg(q.chg,q.pct);
       }
       html+=`<div class="si" onclick="openStock('${sym}')">
         <div class="si-left">
@@ -871,15 +948,13 @@ function renderWatchlist(){
     return;
   }
   el.innerHTML='<div class="loading"><div class="spinner"></div></div>';
-  Promise.allSettled(wl.map(s=>fetchYF(s,'5d','1d'))).then(res=>{
+  fetchTWSEBatch(wl.map(code)).then(twseMap=>{
     let html='';
-    wl.forEach((sym,i)=>{
+    wl.forEach(sym=>{
       const c=code(sym), n2=name(sym);
       let priceStr='--', chgStr='--', cls='nt';
-      if(res[i].status==='fulfilled'&&res[i].value){
-        const q=parseQuote(res[i].value);
-        if(q){ cls=colorCls(q.pct); priceStr='$'+fmtPrice(q.price); chgStr=fmtChg(q.chg,q.pct); }
-      }
+      const q = twseMap[c];
+      if(q){ cls=colorCls(q.pct); priceStr='$'+fmtPrice(q.price); chgStr=fmtChg(q.chg,q.pct); }
       html+=`<div class="si" onclick="openStock('${sym}')">
         <div class="si-left">
           <div class="si-code">${c}</div>
@@ -966,26 +1041,29 @@ function buildStockPage(sym){
 }
 
 async function loadStockData(sym,range,interval){
-  const d=await fetchYF(sym,range,interval);
-  if(!d){
-    const el=document.getElementById('sd-price');
-    if(el) el.innerHTML='<div class="err-state">⚠️ 資料載入失敗，請檢查網路連線</div>';
-    return;
-  }
-  const q=parseQuote(d);
-  const hist=parseHistory(d);
+  const c = code(sym);
+  const [twseMap, chartData] = await Promise.all([
+    fetchTWSEBatch([c]),
+    fetchYF(sym, range, interval)
+  ]);
+  const q = twseMap[c] || null;
+  const hist = parseHistory(chartData);
 
-  // Price
+  // Price（TWSE 官方 API）
   const priceEl=document.getElementById('sd-price');
-  if(priceEl&&q){
-    const cls=colorCls(q.pct);
-    priceEl.innerHTML=`<div class="sd-price-sec">
-      <div class="sd-price ${cls}">$${fmtPrice(q.price)}</div>
-      <div class="sd-chg ${cls}">${fmtChg(q.chg,q.pct)}</div>
-    </div>`;
+  if(priceEl){
+    if(q){
+      const cls=colorCls(q.pct);
+      priceEl.innerHTML=`<div class="sd-price-sec">
+        <div class="sd-price ${cls}">$${fmtPrice(q.price)}</div>
+        <div class="sd-chg ${cls}">${fmtChg(q.chg,q.pct)}</div>
+      </div>`;
+    } else {
+      priceEl.innerHTML='<div class="err-state">⚠️ 無法取得股價資料</div>';
+    }
   }
 
-  // Chart
+  // Chart（Yahoo Finance，僅用於 K 線圖）
   if(hist.length>0) renderChart(hist);
 
   // Indicators
@@ -1149,6 +1227,186 @@ async function loadNews(sym){
 }
 
 /* ══════════════════════════════════════════════════
+   規劃
+═══════════════════════════════════════════════════ */
+let planBudget = 100000;
+let planDebounce;
+
+function fmtBudget(v){
+  if(v>=10000) return (v/10000)+'萬';
+  return v.toLocaleString('zh-TW');
+}
+
+function setPlanBudget(v){
+  planBudget=v;
+  const inp=document.getElementById('plan-budget-input');
+  if(inp) inp.value=v;
+  document.querySelectorAll('.preset-btn').forEach(b=>{
+    b.classList.toggle('active', parseInt(b.dataset.val)===v);
+  });
+  refreshPlanAlloc();
+  loadPlanData();
+}
+
+function updatePlanBudget(v){
+  const n=parseInt(v)||0;
+  if(n<0) return;
+  planBudget=n;
+  document.querySelectorAll('.preset-btn').forEach(b=>{
+    b.classList.toggle('active', parseInt(b.dataset.val)===n);
+  });
+  refreshPlanAlloc();
+  clearTimeout(planDebounce);
+  planDebounce=setTimeout(loadPlanData, 800);
+}
+
+function refreshPlanAlloc(){
+  const el=document.getElementById('plan-alloc-detail');
+  if(!el) return;
+  const allocs=[
+    {lbl:'長期存股/ETF', pct:50, color:'#00c853'},
+    {lbl:'中線/AI精選',  pct:30, color:'#2979ff'},
+    {lbl:'短線高波段',   pct:20, color:'#ff3d3d'},
+  ];
+  el.innerHTML=allocs.map(a=>`
+    <div class="plan-alloc-row">
+      <span class="alloc-lbl">${a.lbl}</span>
+      <div class="alloc-bar-wrap"><div class="alloc-bar" style="width:${a.pct}%;background:${a.color}"></div></div>
+      <span class="alloc-pct">${a.pct}%</span>
+      <span class="alloc-amt">$${Math.round(planBudget*a.pct/100).toLocaleString('zh-TW')}</span>
+    </div>`).join('');
+}
+
+async function loadPlanData(){
+  const el=document.getElementById('plan-content');
+  if(!el) return;
+  el.innerHTML='<div class="loading"><div class="spinner"></div><span>計算中...</span></div>';
+
+  const allCodes=[
+    ...ST_POOL.map(code),
+    ...AI_PICKS.map(p=>code(p.sym)),
+    ...LT_STOCKS.map(s=>code(s.sym))
+  ];
+  const twseMap=await fetchTWSEBatch(allCodes);
+
+  let cands=[];
+  ST_POOL.forEach(s=>{
+    const q=twseMap[code(s)];
+    if(q) cands.push({sym:s,...q});
+  });
+  cands.sort((a,b)=>b.pct-a.pct);
+
+  const n=cands.length;
+  const high=cands.slice(0,3);
+  const mid =cands.slice(Math.max(0,Math.floor(n/2)-1),Math.floor(n/2)+2);
+  const low =cands.slice(-3).reverse();
+
+  const shortBudget  =Math.round(planBudget*0.20);
+  const midBudget    =Math.round(planBudget*0.15);
+  const midlineBudget=Math.round(planBudget*0.30);
+  const ltBudget     =Math.round(planBudget*0.50);
+
+  let html='';
+  html+=buildPlanSection('🔴 高風險波段','短線 20%',high,shortBudget,'🔴 高風險',twseMap);
+  html+=buildPlanSection('🟡 中風險波段','短線 15%',mid,midBudget,'🟡 中風險',twseMap);
+  html+=buildPlanSection('🟢 低風險波段','短線 15%',low,midBudget,'🟢 低風險',twseMap);
+
+  html+=`<div class="section">
+    <div class="sec-title" style="color:var(--accent)">🤖 AI 精選推薦</div>
+    <div class="sec-sub">建議預算：中線 30% → $${midlineBudget.toLocaleString('zh-TW')}</div>`;
+  AI_PICKS.forEach(p=>{
+    const q=twseMap[code(p.sym)];
+    if(q) html+=planStockCard(p.sym,q.price,midlineBudget,'🤖 AI精選',p.reason);
+  });
+  html+='</div>';
+
+  html+=`<div class="section">
+    <div class="sec-title">🏦 長期存股</div>
+    <div class="sec-sub">建議預算：存股 50% → $${ltBudget.toLocaleString('zh-TW')}</div>`;
+  LT_STOCKS.forEach(s=>{
+    const q=twseMap[code(s.sym)];
+    const drate=DIV[s.sym]?.rate||3;
+    if(q) html+=planStockCard(s.sym,q.price,ltBudget,'🟢 存股',`${s.reason}，殖利率約${drate}%`);
+  });
+  html+='</div>';
+
+  el.innerHTML=html;
+}
+
+function buildPlanSection(title,pctLabel,stocks,budget,riskLabel){
+  if(!stocks.length) return '';
+  let html=`<div class="section">
+    <div class="sec-title">${title}</div>
+    <div class="sec-sub">建議預算：${pctLabel} → $${budget.toLocaleString('zh-TW')}</div>`;
+  stocks.forEach(s=>{
+    if(s.price) html+=planStockCard(s.sym,s.price,budget,riskLabel,genReason(s.pct));
+  });
+  return html+'</div>';
+}
+
+function planStockCard(sym,price,allocBudget,riskLabel,reason){
+  const c=code(sym), n2=name(sym);
+  const lotPrice=price*1000;
+  const lotsAffordable=Math.floor(allocBudget/lotPrice);
+  const sharesAffordable=Math.floor(allocBudget/price);
+
+  const lotHtml = lotsAffordable>=1
+    ? `<span class="plan-ok">✅ 整張可買 ${lotsAffordable} 張（$${Math.round(lotPrice*lotsAffordable).toLocaleString('zh-TW')}）</span>`
+    : `<span class="plan-no">整張需 $${Math.round(lotPrice).toLocaleString('zh-TW')}（差 $${Math.round(lotPrice-allocBudget).toLocaleString('zh-TW')}）</span>`;
+
+  const fractHtml = sharesAffordable>0
+    ? `<span class="plan-frac">零股可買 ${sharesAffordable} 股（$${Math.round(sharesAffordable*price).toLocaleString('zh-TW')}）</span>`
+    : `<span class="plan-no">預算不足零股（1股需 $${Math.round(price).toLocaleString('zh-TW')}）</span>`;
+
+  return `<div class="s-card" onclick="openStock('${sym}')">
+    <div class="sc-top">
+      <div class="sc-left">
+        <div class="sc-code">${c}</div>
+        <div class="sc-name">${n2}</div>
+      </div>
+      <div class="sc-right">
+        <div style="font-size:13px;font-weight:700">$${fmtPrice(price)}/股</div>
+        <div style="font-size:11px;color:var(--muted)">$${Math.round(lotPrice).toLocaleString('zh-TW')}/張</div>
+      </div>
+    </div>
+    <div class="plan-lot-row">${lotHtml}</div>
+    <div class="plan-lot-row">${fractHtml}</div>
+    <div class="sc-bot" style="margin-top:6px">
+      <span class="risk-tag">${riskLabel}</span>
+      <span class="sc-reason">${reason}</span>
+    </div>
+  </div>`;
+}
+
+function renderPlan(){
+  const el=document.getElementById('page-plan');
+  const presets=[50000,100000,300000,500000,1000000,2000000];
+  el.innerHTML=`
+    <div class="pg-header">💰 投資規劃</div>
+    <div class="plan-budget-sec">
+      <div class="plan-budget-lbl">我的投資預算</div>
+      <div class="plan-budget-row">
+        <input type="number" id="plan-budget-input" value="${planBudget}"
+          class="plan-budget-input" oninput="updatePlanBudget(this.value)">
+        <span class="plan-unit">元</span>
+      </div>
+      <div class="plan-presets">
+        ${presets.map(v=>`<button class="preset-btn${planBudget===v?' active':''}"
+          data-val="${v}" onclick="setPlanBudget(${v})">${fmtBudget(v)}</button>`).join('')}
+      </div>
+    </div>
+    <div class="plan-alloc-sec">
+      <div class="plan-alloc-title">📊 建議資金配置</div>
+      <div id="plan-alloc-detail"></div>
+    </div>
+    <div id="plan-content">
+      <div class="loading"><div class="spinner"></div><span>計算中...</span></div>
+    </div>`;
+  refreshPlanAlloc();
+  loadPlanData();
+}
+
+/* ══════════════════════════════════════════════════
    設定
 ═══════════════════════════════════════════════════ */
 function renderSettings(){
@@ -1175,7 +1433,7 @@ function renderSettings(){
     <button class="danger-btn" onclick="clearWL()">🗑️ 清除自選股清單</button>
     <div class="about-box">
       <strong>台股投資助理 v1.0</strong><br><br>
-      資料來源：Yahoo Finance（非官方 API）、鉅亨網 RSS<br>
+      資料來源：TWSE 官方 API（股價即時）、Yahoo Finance（K 線圖）、鉅亨網 RSS（新聞）<br>
       圖表：TradingView Lightweight Charts<br>
       股票色彩：遵循台灣慣例（紅漲綠跌）<br><br>
       <strong>完整免責聲明</strong><br>
