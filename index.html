@@ -624,38 +624,10 @@ async function fetchTWSEAll(){
   }catch(_){ return twseCache || {}; }
 }
 
-async function fetchYFBatch(codes){
-  const syms = codes.map(c=>c+'.TW').join(',');
-  const url = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${encodeURIComponent(syms)}`;
-  for(const makeProxy of PROXIES){
-    try{
-      const r = await fetchTimeout(makeProxy(url), 12000);
-      if(!r.ok) continue;
-      const j = await r.json();
-      const results = j?.quoteResponse?.result || [];
-      if(!results.length) continue;
-      const map = {};
-      results.forEach(q=>{
-        const c = q.symbol?.replace('.TW','');
-        const price = q.regularMarketPrice;
-        if(!price || !c) return;
-        const chg = q.regularMarketChange || 0;
-        const pct = q.regularMarketChangePercent || 0;
-        map[c] = {price, chg, pct, prev: price - chg};
-      });
-      if(Object.keys(map).length > 0) return map;
-    }catch(_){}
-  }
-  return {};
-}
-
 async function fetchTWSEBatch(codes){
   const all = await fetchTWSEAll();
   const result = {};
   codes.forEach(c=>{ if(all[c]) result[c] = all[c]; });
-  if(Object.keys(result).length === 0){
-    return await fetchYFBatch(codes);
-  }
   return result;
 }
 
@@ -693,42 +665,60 @@ async function fetchTWSEIndex(){
       }
     }
   }catch(_){}
-  // fallback: Yahoo Finance via corsproxy
-  try{
-    const yfUrl = `${YF}^TWII?interval=1d&range=5d&includePrePost=false`;
-    const r = await fetchTimeout(`https://corsproxy.io/?${encodeURIComponent(yfUrl)}`, 8000);
-    if(r.ok){
-      const j = await r.json();
-      const q = parseQuote(j);
-      if(q) return q;
-    }
-  }catch(_){}
   return null;
 }
 
-async function fetchYF(sym, range='1y', interval='1d'){
-  const key = `${sym}|${range}|${interval}`;
+// ROC 日期（114/04/25）→ Unix 秒
+function rocToDate(s){
+  const p=s.split('/');
+  return Math.floor(new Date(parseInt(p[0])+1911,parseInt(p[1])-1,parseInt(p[2])).getTime()/1000);
+}
+function pf(s){ return parseFloat(String(s).replace(/,/g,'')); }
+
+async function fetchTWSEMonthChart(stockNo, yyyymm){
+  const key=`chart|${stockNo}|${yyyymm}`;
   if(dataCache[key]) return dataCache[key];
+  const url=`https://www.twse.com.tw/exchangeReport/STOCK_DAY?response=json&date=${yyyymm}01&stockNo=${stockNo}`;
+  try{
+    const r=await fetchTimeout(url,8000);
+    if(!r.ok) return [];
+    const j=await r.json();
+    if(j.stat!=='OK'||!Array.isArray(j.data)) return [];
+    const rows=j.data.map(row=>{
+      const o=pf(row[3]),h=pf(row[4]),l=pf(row[5]),c=pf(row[6]);
+      if(!c||isNaN(c)) return null;
+      return {time:rocToDate(row[0]),open:o||c,high:h||c,low:l||c,close:c};
+    }).filter(Boolean);
+    dataCache[key]=rows;
+    return rows;
+  }catch(_){ return []; }
+}
 
-  const yfUrl = `${YF}${sym}?interval=${interval}&range=${range}&includePrePost=false`;
-  let data = null;
-
-  for(const makeProxy of PROXIES){
-    if(data) break;
-    try{
-      const r = await fetchTimeout(makeProxy(yfUrl), 8000);
-      if(!r.ok) continue;
-      const txt = await r.text();
-      const j = JSON.parse(txt);
-      // allorigins /raw 直接回傳 JSON；corsproxy.io 也直接回傳
-      if(j?.chart?.result){ data = j; break; }
-      // allorigins /get 回傳 { contents: "..." }
-      if(j?.contents){ const inner = JSON.parse(j.contents); if(inner?.chart?.result) data = inner; }
-    }catch(_){}
+async function fetchTWSEChart(stockNo, range){
+  const cacheKey=`twsechart|${stockNo}|${range}`;
+  if(dataCache[cacheKey]) return dataCache[cacheKey];
+  const now=new Date();
+  const numMonths={
+    '1mo':1,'3mo':3,'6mo':6,'1y':12,'3y':24,'5y':36
+  }[range]||12;
+  const yyyymms=[];
+  for(let i=0;i<numMonths;i++){
+    const d=new Date(now.getFullYear(),now.getMonth()-i,1);
+    yyyymms.push(d.getFullYear()+String(d.getMonth()+1).padStart(2,'0'));
   }
-
-  if(data) dataCache[key] = data;
-  return data;
+  yyyymms.reverse();
+  // 分批並發（每批 6 個月）
+  let all=[];
+  for(let i=0;i<yyyymms.length;i+=6){
+    const batch=yyyymms.slice(i,i+6);
+    const res=await Promise.all(batch.map(m=>fetchTWSEMonthChart(stockNo,m)));
+    all=all.concat(...res);
+  }
+  all.sort((a,b)=>a.time-b.time);
+  const seen=new Set();
+  const result=all.filter(d=>{ if(seen.has(d.time)) return false; seen.add(d.time); return true; });
+  dataCache[cacheKey]=result;
+  return result;
 }
 
 function parseRSS(xml){
@@ -770,32 +760,6 @@ async function fetchNews(){
   return [];
 }
 
-function parseQuote(data){
-  const res = data?.chart?.result?.[0];
-  if(!res) return null;
-  const m = res.meta;
-  const price = m.regularMarketPrice || m.chartPreviousClose;
-  const prev  = m.previousClose || m.chartPreviousClose || price;
-  const chg   = price - prev;
-  const pct   = prev ? (chg/prev)*100 : 0;
-  return {price, prev, chg, pct};
-}
-
-function parseHistory(data){
-  const res = data?.chart?.result?.[0];
-  if(!res) return [];
-  const ts = res.timestamp || [];
-  const q  = res.indicators?.quote?.[0] || {};
-  const {open:o=[],high:h=[],low:l=[],close:c=[]} = q;
-  return ts.reduce((arr,t,i)=>{
-    if(c[i]!=null) arr.push({
-      time:t,
-      open: o[i]||c[i], high:h[i]||c[i],
-      low:  l[i]||c[i], close:c[i]
-    });
-    return arr;
-  },[]);
-}
 
 /* ══════════════════════════════════════════════════
    Technical indicators
@@ -1128,29 +1092,28 @@ function buildStockPage(sym){
     <div id="sd-price"><div class="loading"><div class="spinner"></div></div></div>
     <div id="chart-wrap"></div>
     <div class="range-bar">
-      <button class="range-btn" onclick="changeRange('1mo','1d',this)">1個月</button>
-      <button class="range-btn" onclick="changeRange('3mo','1d',this)">3個月</button>
-      <button class="range-btn active" onclick="changeRange('1y','1d',this)">1年</button>
-      <button class="range-btn" onclick="changeRange('3y','1wk',this)">3年</button>
-      <button class="range-btn" onclick="changeRange('5y','1wk',this)">5年</button>
+      <button class="range-btn" onclick="changeRange('1mo',this)">1個月</button>
+      <button class="range-btn" onclick="changeRange('3mo',this)">3個月</button>
+      <button class="range-btn active" onclick="changeRange('1y',this)">1年</button>
+      <button class="range-btn" onclick="changeRange('3y',this)">3年</button>
+      <button class="range-btn" onclick="changeRange('5y',this)">5年</button>
     </div>
     <div id="sd-indicators"></div>
     <div id="sd-ai"></div>
     ${DIV[sym]?'<div id="sd-div"></div>':''}
     <div id="sd-news"><div class="news-block"><div class="loading"><div class="spinner"></div></div></div></div>
   `;
-  loadStockData(sym,'1y','1d');
+  loadStockData(sym,'1y');
   loadNews(sym);
 }
 
-async function loadStockData(sym,range,interval){
+async function loadStockData(sym,range){
   const c = code(sym);
-  const [twseMap, chartData] = await Promise.all([
+  const [twseMap, hist] = await Promise.all([
     fetchTWSEBatch([c]),
-    fetchYF(sym, range, interval)
+    fetchTWSEChart(c, range)
   ]);
   const q = twseMap[c] || null;
-  const hist = parseHistory(chartData);
 
   // Price（TWSE 官方 API）
   const priceEl=document.getElementById('sd-price');
@@ -1166,7 +1129,7 @@ async function loadStockData(sym,range,interval){
     }
   }
 
-  // Chart（Yahoo Finance，僅用於 K 線圖）
+  // Chart（TWSE STOCK_DAY）
   if(hist.length>0) renderChart(hist);
 
   // Indicators
@@ -1210,11 +1173,11 @@ function renderChart(hist){
   ro.observe(wrap);
 }
 
-function changeRange(range,interval,btn){
+function changeRange(range,btn){
   curRange=range;
   document.querySelectorAll('.range-btn').forEach(b=>b.classList.remove('active'));
   btn.classList.add('active');
-  if(curStock) loadStockData(curStock,range,interval);
+  if(curStock) loadStockData(curStock,range);
 }
 
 function renderIndicators(ma5,ma20,ma60,rsi14,macdVal,price){

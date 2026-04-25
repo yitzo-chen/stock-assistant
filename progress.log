@@ -25,13 +25,13 @@
 
 ---
 
-## [PENDING] Commit 4 - K線圖換 TWSE STOCK_DAY API
-- [ ] Bug2: 移除 fetchYF（YF proxy 全封）
-- [ ] 新增 rocToDate / fetchTWSEMonthChart / fetchTWSEChart
-- [ ] loadStockData 改用 TWSE chart
-- [ ] changeRange 不再傳 interval
+## [DONE] Commit 4 - K線圖換 TWSE STOCK_DAY API
+- [x] Bug2: 移除 fetchYFBatch（YF proxy 全封）
+- [x] 移除 fetchTWSEBatch 裡的 YF fallback
+- [x] fetchTWSEChart / fetchTWSEMonthChart / rocToDate 已在 Commit 3 就位
+- [x] loadStockData 已使用 TWSE chart
+- [x] changeRange 移除 interval 參數
 
 ---
 
-## 下次繼續
-從 progress.log 確認狀態後繼續未完成項目
+## 狀態：v1.1 全部修復完成 ✅
