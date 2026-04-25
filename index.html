@@ -477,13 +477,39 @@ input{font-family:inherit}
    常數
 ═══════════════════════════════════════════════════ */
 const NAMES = {
-  '2330':'台積電','2317':'鴻海','2454':'聯發科','2382':'廣達',
-  '2308':'台達電','0050':'元大台灣50','0056':'元大高股息',
-  '2412':'中華電','2882':'國泰金','2886':'兆豐金',
-  '2891':'中信金','2395':'研華','3034':'聯詠','2379':'瑞昱',
-  '2303':'聯電','2344':'華邦電','2357':'華碩','2376':'技嘉',
-  '1301':'台塑','1303':'南亞','2002':'中鋼','2207':'和泰車',
-  '2474':'可成','3008':'大立光'
+  // 半導體
+  '2330':'台積電','2317':'鴻海','2454':'聯發科','2303':'聯電',
+  '2344':'華邦電','2379':'瑞昱','3034':'聯詠','2409':'友達',
+  '2408':'南亞科','2449':'京元電','2458':'義隆','3008':'大立光',
+  '3037':'欣興','6770':'力積電','2327':'國巨','2337':'旺宏',
+  '6415':'矽力-KY','3035':'智原',
+  // 電子/資訊
+  '2382':'廣達','2308':'台達電','2357':'華碩','2376':'技嘉',
+  '2395':'研華','2474':'可成','2353':'宏碁','2356':'英業達',
+  '2347':'聯強','2352':'佳世達','2377':'微星','2385':'群光',
+  '2498':'宏達電','4938':'和碩','6669':'緯穎','2360':'致茂',
+  '2392':'正崴','2421':'建準','3017':'奇鋐',
+  // 金融
+  '2882':'國泰金','2886':'兆豐金','2891':'中信金','2881':'富邦金',
+  '2883':'開發金','2884':'玉山金','2885':'元大金','2880':'華南金',
+  '2887':'台新金','2888':'新光金','2890':'永豐金','2892':'第一金',
+  '5880':'合庫金','2801':'彰銀','2836':'台灣企銀','5876':'上海商銀',
+  '2823':'中壽','5871':'中租-KY',
+  // 電信
+  '2412':'中華電','3045':'台灣大哥大','4904':'遠傳',
+  // 傳產/石化
+  '1301':'台塑','1303':'南亞','1326':'台化','6505':'台塑化',
+  '1402':'遠東新','2002':'中鋼','2207':'和泰車','2371':'大同',
+  // 航運
+  '2603':'長榮','2609':'陽明','2615':'萬海','2618':'長榮航',
+  // 建設
+  '2504':'國建','2520':'冠德','2542':'興富發','2548':'華固',
+  // 零售/餐飲
+  '2912':'統一超','2903':'遠百','2727':'王品',
+  // ETF
+  '0050':'元大台灣50','0056':'元大高股息',
+  '006208':'富邦台50','00878':'國泰永續高股息',
+  '00919':'群益台灣精選高息','00929':'復華台灣科技優息',
 };
 
 const ST_POOL = [
@@ -513,10 +539,10 @@ const DIV = {
 };
 
 const YF = 'https://query1.finance.yahoo.com/v8/finance/chart/';
-// CORS proxy（allorigins 已掛，只保留 corsproxy.io）
 const PROXIES = [
   url => `https://corsproxy.io/?${encodeURIComponent(url)}`,
   url => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`,
+  url => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
 ];
 
 // TWSE 官方開放資料（CORS 完整支援）
@@ -598,11 +624,53 @@ async function fetchTWSEAll(){
   }catch(_){ return twseCache || {}; }
 }
 
+async function fetchYFBatch(codes){
+  const syms = codes.map(c=>c+'.TW').join(',');
+  const url = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${encodeURIComponent(syms)}`;
+  for(const makeProxy of PROXIES){
+    try{
+      const r = await fetchTimeout(makeProxy(url), 12000);
+      if(!r.ok) continue;
+      const j = await r.json();
+      const results = j?.quoteResponse?.result || [];
+      if(!results.length) continue;
+      const map = {};
+      results.forEach(q=>{
+        const c = q.symbol?.replace('.TW','');
+        const price = q.regularMarketPrice;
+        if(!price || !c) return;
+        const chg = q.regularMarketChange || 0;
+        const pct = q.regularMarketChangePercent || 0;
+        map[c] = {price, chg, pct, prev: price - chg};
+      });
+      if(Object.keys(map).length > 0) return map;
+    }catch(_){}
+  }
+  return {};
+}
+
 async function fetchTWSEBatch(codes){
   const all = await fetchTWSEAll();
   const result = {};
   codes.forEach(c=>{ if(all[c]) result[c] = all[c]; });
+  if(Object.keys(result).length === 0){
+    return await fetchYFBatch(codes);
+  }
   return result;
+}
+
+async function loadStockList(){
+  try{
+    const r = await fetchTimeout('https://openapi.twse.com.tw/v1/opendata/t187ap03_L', 10000);
+    if(!r.ok) return;
+    const arr = await r.json();
+    if(!Array.isArray(arr) || !arr.length) return;
+    arr.forEach(item=>{
+      const c = (item['有價證券代號'] || '').trim();
+      const n = (item['有價證券名稱'] || '').trim();
+      if(c && n && /^\d{4,6}$/.test(c) && !NAMES[c]) NAMES[c] = n;
+    });
+  }catch(_){}
 }
 
 async function fetchTWSEIndex(){
@@ -678,27 +746,29 @@ function parseRSS(xml){
 async function fetchNews(){
   if(newsCache) return newsCache;
   const RSS_FEEDS = [
+    'https://news.google.com/rss/search?q=台股+股市&hl=zh-TW&gl=TW&ceid=TW:zh-Hant',
     'https://www.cnyes.com/rss/cat/tw_stock',
     'https://news.cnyes.com/news/rss/cat/tw_stock',
     'https://www.moneydj.com/FINT/rss/newsrss.aspx?svc=NW',
   ];
-  // allorigins 已掛，只用 corsproxy.io
   for(const feed of RSS_FEEDS){
-    try{
-      const r = await fetchTimeout(`https://corsproxy.io/?${encodeURIComponent(feed)}`, 9000);
-      if(!r.ok) continue;
-      const txt = await r.text();
-      let items = [];
-      if(txt.trim().startsWith('<')){ items = parseRSS(txt); }
-      else{
-        try{
-          const j = JSON.parse(txt);
-          const xml = j.contents || j;
-          if(typeof xml === 'string') items = parseRSS(xml);
-        }catch(_){}
-      }
-      if(items.length){ newsCache = items; return newsCache; }
-    }catch(_){}
+    for(const makeProxy of PROXIES){
+      try{
+        const r = await fetchTimeout(makeProxy(feed), 9000);
+        if(!r.ok) continue;
+        const txt = await r.text();
+        let items = [];
+        if(txt.trim().startsWith('<')){ items = parseRSS(txt); }
+        else{
+          try{
+            const j = JSON.parse(txt);
+            const xml = j.contents || j.raw || j;
+            if(typeof xml === 'string') items = parseRSS(xml);
+          }catch(_){}
+        }
+        if(items.length){ newsCache = items; return newsCache; }
+      }catch(_){}
+    }
   }
   return [];
 }
@@ -1342,7 +1412,21 @@ async function loadPlanData(){
   const midlineBudget=Math.round(planBudget*0.30);
   const ltBudget     =Math.round(planBudget*0.50);
 
-  let html='';
+  // 投資摘要
+  const totalBudget = planBudget;
+  const totalStocks = high.length + mid.length + low.length + AI_PICKS.filter(p=>twseMap[code(p.sym)]).length + LT_STOCKS.filter(s=>twseMap[code(s.sym)]).length;
+  let html=`<div class="section">
+    <div class="plan-alloc-sec" style="margin:0">
+      <div class="plan-alloc-title">💼 投資摘要</div>
+      <div style="font-size:13px;color:var(--muted);line-height:2">
+        總預算：<strong style="color:var(--text)">$${totalBudget.toLocaleString('zh-TW')}</strong>
+        可分析股票：<strong style="color:var(--accent)">${totalStocks} 檔</strong><br>
+        短線波段：$${(shortBudget+midBudget*2).toLocaleString('zh-TW')}（35%）
+        AI精選：$${midlineBudget.toLocaleString('zh-TW')}（30%）
+        存股：$${ltBudget.toLocaleString('zh-TW')}（50%）
+      </div>
+    </div>
+  </div>`;
   html+=buildPlanSection('🔴 高風險波段','短線 20%',high,shortBudget,'🔴 高風險',twseMap);
   html+=buildPlanSection('🟡 中風險波段','短線 15%',mid,midBudget,'🟡 中風險',twseMap);
   html+=buildPlanSection('🟢 低風險波段','短線 15%',low,midBudget,'🟢 低風險',twseMap);
@@ -1515,6 +1599,7 @@ function init(){
   document.getElementById('app-date').textContent=todayStr();
   const s=getSettings();
   if(!s.accepted) document.getElementById('risk-modal').classList.add('show');
+  loadStockList();
   renderHome();
   renderSettings();
 }
