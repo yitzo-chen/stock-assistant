@@ -680,13 +680,12 @@ async function fetchTWSEIndex(){
     if(r.ok){
       const arr = await r.json();
       const item = arr.find(i=>
-        String(i.Index||'').includes('加權') ||
-        String(i.Type||'').includes('加權')  ||
-        String(i.Name||'').includes('加權')
+        String(i['指數名稱']||i['指數']||'').includes('加權')
       );
       if(item){
-        const price = parseFloat(item.ClosingIndex || item.Index || item.Close);
-        const chg   = parseFloat(item.Change || '0');
+        const price = parseFloat(String(item['收盤指數']||'0').replace(/,/g,''));
+        const sign  = String(item['漲跌']||'+')==='-'?-1:1;
+        const chg   = parseFloat(String(item['漲跌點數']||'0').replace(/,/g,''))*sign;
         if(price && !isNaN(price)){
           const prev = price - chg;
           return {price, prev, chg, pct: prev>0?(chg/prev)*100:0};
@@ -1405,33 +1404,33 @@ async function loadPlanData(){
   const mid =cands.slice(Math.max(0,Math.floor(n/2)-1),Math.floor(n/2)+2);
   const low =cands.slice(-3).reverse();
 
-  const shortBudget  =Math.round(planBudget*0.20);
-  const midBudget    =Math.round(planBudget*0.15);
-  const midlineBudget=Math.round(planBudget*0.30);
+  const highBudget   =Math.round(planBudget*0.15);
+  const midBudget    =Math.round(planBudget*0.10);
+  const lowBudget    =Math.round(planBudget*0.05);
+  const midlineBudget=Math.round(planBudget*0.20);
   const ltBudget     =Math.round(planBudget*0.50);
 
   // 投資摘要
-  const totalBudget = planBudget;
-  const totalStocks = high.length + mid.length + low.length + AI_PICKS.filter(p=>twseMap[code(p.sym)]).length + LT_STOCKS.filter(s=>twseMap[code(s.sym)]).length;
+  const totalStocks = Object.keys(NAMES).length;
   let html=`<div class="section">
     <div class="plan-alloc-sec" style="margin:0">
       <div class="plan-alloc-title">💼 投資摘要</div>
       <div style="font-size:13px;color:var(--muted);line-height:2">
-        總預算：<strong style="color:var(--text)">$${totalBudget.toLocaleString('zh-TW')}</strong>
+        總預算：<strong style="color:var(--text)">$${planBudget.toLocaleString('zh-TW')}</strong>
         可分析股票：<strong style="color:var(--accent)">${totalStocks} 檔</strong><br>
-        短線波段：$${(shortBudget+midBudget*2).toLocaleString('zh-TW')}（35%）
-        AI精選：$${midlineBudget.toLocaleString('zh-TW')}（30%）
+        短線波段：$${(highBudget+midBudget+lowBudget).toLocaleString('zh-TW')}（30%）
+        AI精選：$${midlineBudget.toLocaleString('zh-TW')}（20%）
         存股：$${ltBudget.toLocaleString('zh-TW')}（50%）
       </div>
     </div>
   </div>`;
-  html+=buildPlanSection('🔴 高風險波段','短線 20%',high,shortBudget,'🔴 高風險',twseMap);
-  html+=buildPlanSection('🟡 中風險波段','短線 15%',mid,midBudget,'🟡 中風險',twseMap);
-  html+=buildPlanSection('🟢 低風險波段','短線 15%',low,midBudget,'🟢 低風險',twseMap);
+  html+=buildPlanSection('🔴 高風險波段','短線 15%',high,highBudget,'🔴 高風險',twseMap);
+  html+=buildPlanSection('🟡 中風險波段','短線 10%',mid,midBudget,'🟡 中風險',twseMap);
+  html+=buildPlanSection('🟢 低風險波段','短線 5%',low,lowBudget,'🟢 低風險',twseMap);
 
   html+=`<div class="section">
     <div class="sec-title" style="color:var(--accent)">🤖 AI 精選推薦</div>
-    <div class="sec-sub">建議預算：中線 30% → $${midlineBudget.toLocaleString('zh-TW')}</div>`;
+    <div class="sec-sub">建議預算：中線 20% → $${midlineBudget.toLocaleString('zh-TW')}</div>`;
   AI_PICKS.forEach(p=>{
     const q=twseMap[code(p.sym)];
     if(q) html+=planStockCard(p.sym,q.price,midlineBudget,'🤖 AI精選',p.reason);
@@ -1550,8 +1549,9 @@ function renderSettings(){
     </div>
     <button class="danger-btn" onclick="clearWL()">🗑️ 清除自選股清單</button>
     <div class="about-box">
-      <strong>台股投資助理 v1.0</strong><br><br>
-      資料來源：TWSE 官方 API（股價即時）、Yahoo Finance（K 線圖）、鉅亨網 RSS（新聞）<br>
+      <strong>台股投資助理 v1.1</strong><br>
+      最終修改：2026-04-25<br><br>
+      資料來源：TWSE 官方 API（股價即時 + K線圖）、Yahoo Finance 台灣 / 經濟日報（新聞）<br>
       圖表：TradingView Lightweight Charts<br>
       股票色彩：遵循台灣慣例（紅漲綠跌）<br><br>
       <strong>完整免責聲明</strong><br>
