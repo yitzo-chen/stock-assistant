@@ -746,10 +746,8 @@ function parseRSS(xml){
 async function fetchNews(){
   if(newsCache) return newsCache;
   const RSS_FEEDS = [
-    'https://news.google.com/rss/search?q=台股+股市&hl=zh-TW&gl=TW&ceid=TW:zh-Hant',
-    'https://www.cnyes.com/rss/cat/tw_stock',
-    'https://news.cnyes.com/news/rss/cat/tw_stock',
-    'https://www.moneydj.com/FINT/rss/newsrss.aspx?svc=NW',
+    'https://tw.news.yahoo.com/rss/finance',
+    'https://money.udn.com/rssfeed/news/1001/5591?ch=money',
   ];
   for(const feed of RSS_FEEDS){
     for(const makeProxy of PROXIES){
